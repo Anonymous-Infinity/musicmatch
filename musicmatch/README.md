@@ -1,78 +1,37 @@
-# React + TypeScript + Vite
+# MusicMatch
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+MusicMatch is a React and TypeScript music-discovery demo. Its social discovery and matching data remains local demo data. Connecting Spotify adds the authenticated listener's actual Spotify profile, top artists, and recently played tracks to the Profile screen.
 
-Currently, two official plugins are available:
+## Run locally
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
-
-## React Compiler
-
-The React Compiler is enabled on this template. See [this documentation](https://react.dev/learn/react-compiler) for more information.
-
-Note: This will impact Vite dev & build performances.
-You can also try [the experimental native React Compiler support in plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react/README.md#rust-react-compiler) by using `compiler: true` in the plugin options instead of using the Babel plugin.
-
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-
+```powershell
+npm.cmd install
+Copy-Item .env.example .env
+npm.cmd run dev -- --host 127.0.0.1
 ```
 
-You can also install [eslint-plugin-react-x](https://npmx.dev/package/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://npmx.dev/package/eslint-plugin-react-dom) for React-specific lint rules:
+Use the URL printed by Vite. The default example is `http://127.0.0.1:5173/`; Vite's SPA fallback also serves the OAuth callback path.
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+## Spotify configuration
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+Create an app in the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard), then configure `.env` (which is ignored by Git):
 
+```dotenv
+VITE_SPOTIFY_CLIENT_ID=your_spotify_client_id
+VITE_SPOTIFY_REDIRECT_URI=http://127.0.0.1:5173/callback
 ```
+
+In the dashboard, add **the exact same value** as `VITE_SPOTIFY_REDIRECT_URI` to the app's Redirect URIs. Protocol, host, port, path, case, and trailing slash must match. Spotify accepts HTTPS redirect URIs, with `http://127.0.0.1` allowed for local development; do not use `localhost` for a new Spotify integration.
+
+This browser-only app uses Authorization Code with PKCE and never needs or reads a Spotify client secret. It requests only `user-read-private`, `user-top-read`, and `user-read-recently-played`.
+
+Development Mode currently requires a Premium app owner and allows up to five allowlisted Spotify users. Add each tester in Dashboard → your app → Settings → Users Management. A user can complete login but receive `403` API responses until allowlisted.
+
+## Checks
+
+```powershell
+npm.cmd run lint
+npm.cmd run build
+```
+
+OAuth requires a real dashboard registration and browser session to test end-to-end. The UI reports configuration, authorization, permission, rate-limit, and token-refresh failures without logging tokens.

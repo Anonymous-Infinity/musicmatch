@@ -1,5 +1,7 @@
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import type { Dispatch, SetStateAction } from "react";
+import { useSpotifyAuth } from "./useSpotifyAuth";
 import "./App.css";
 
 type Page = "discover" | "map" | "matches" | "profile" | "settings";
@@ -88,43 +90,115 @@ function Icon({ children }: { children: string }) {
   return <span className="icon" aria-hidden="true">{children}</span>;
 }
 
+
+function usePersistentState<T>(
+  key: string,
+  initialValue: T,
+  isValid: (value: unknown) => value is T,
+): [T, Dispatch<SetStateAction<T>>] {
+  const [value, setValue] = useState<T>(() => {
+    try {
+      const stored = localStorage.getItem(key);
+
+      if (stored === null) return initialValue;
+
+      const parsed: unknown = JSON.parse(stored);
+      return isValid(parsed) ? parsed : initialValue;
+    } catch {
+      return initialValue;
+    }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(key, JSON.stringify(value));
+    } catch {
+      // Private browsing and quota restrictions should not interrupt the demo.
+    }
+  }, [key, value]);
+
+  return [value, setValue];
+}
+
+const isPersonIdArray = (value: unknown): value is number[] =>
+  Array.isArray(value) && value.every(
+    (item) => typeof item === "number" && people.some((person) => person.id === item),
+  );
+
+const isMessages = (value: unknown): value is Record<number, string[]> =>
+  typeof value === "object" && value !== null &&
+  Object.values(value).every(
+    (conversation) => Array.isArray(conversation) && conversation.every((message) => typeof message === "string"),
+  );
+
+const isNumber = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
+const isString = (value: unknown): value is string => typeof value === "string";
+const isBoolean = (value: unknown): value is boolean => typeof value === "boolean";
+const isDiscoveryIndex = (value: unknown): value is number =>
+  isNumber(value) && Number.isInteger(value) && value >= 0 && value <= people.length;
+const isRadius = (value: unknown): value is number =>
+  isNumber(value) && Number.isInteger(value) && value >= 1 && value <= 25;
+
+function clampDiscoveryIndex(value: number) {
+  return Math.min(Math.max(0, value), people.length);
+}
+
+
 export default function App() {
+  const spotify = useSpotifyAuth();
   const [page, setPage] = useState<Page>("discover");
-  const [index, setIndex] = useState(0);
-  const [liked, setLiked] = useState<number[]>([]);
-  const [passed, setPassed] = useState<number[]>([]);
-  const [matches, setMatches] = useState<number[]>([3]);
+  const [index, setIndex] = usePersistentState("musicmatch.discovery-index", 0, isDiscoveryIndex);
+  const [liked, setLiked] = usePersistentState("musicmatch.likes", [], isPersonIdArray);
+  const [passed, setPassed] = usePersistentState("musicmatch.passes", [], isPersonIdArray);
+  const [matches, setMatches] = usePersistentState("musicmatch.matches", [3], isPersonIdArray);
   const [selected, setSelected] = useState<Person | null>(null);
   const [matchPopup, setMatchPopup] = useState<Person | null>(null);
   const [chatPerson, setChatPerson] = useState<Person | null>(null);
   const [message, setMessage] = useState("");
-  const [messages, setMessages] = useState<Record<number, string[]>>({});
-  const [name, setName] = useState("Alex Morgan");
-  const [bio, setBio] = useState("Finding my people, one song at a time.");
-  const [radius, setRadius] = useState(10);
-  const [visible, setVisible] = useState(true);
-  const [dark, setDark] = useState(true);
+  const [messages, setMessages] = usePersistentState("musicmatch.messages", {}, isMessages);
+  const [name, setName] = usePersistentState("musicmatch.profile-name", "Alex Morgan", isString);
+  const [bio, setBio] = usePersistentState("musicmatch.profile-bio", "Finding my people, one song at a time.", isString);
+  const [radius, setRadius] = usePersistentState("musicmatch.discovery-radius", 10, isRadius);
+  const [visible, setVisible] = usePersistentState("musicmatch.discovery-visible", true, isBoolean);
+  const [dark, setDark] = usePersistentState("musicmatch.theme-dark", true, isBoolean);
   const [query, setQuery] = useState("");
 
-  const current = people[index];
+  const safeIndex = clampDiscoveryIndex(index);
+  const current = people[safeIndex];
   const connectedPeople = people.filter((p) => matches.includes(p.id));
+  const nearbyPeople = people.filter((person) => person.distance <= radius);
+  const filteredNearbyPeople = nearbyPeople.filter((person) =>
+    person.name.toLowerCase().includes(query.trim().toLowerCase()),
+  );
+  const spotifyConnected = spotify.status === "authenticated" && spotify.data !== null;
+  const profileName = spotify.data?.profile.displayName ?? name;
+  const spotifyDisplayName = spotify.data?.profile.displayName ?? "your Spotify account";
+  const profileImage = spotify.data?.profile.imageUrl ?? null;
+  const topArtists = spotify.data?.topArtists ?? [];
+  const recentlyPlayed = spotify.data?.recentlyPlayed ?? [];
+
+  function updateRadius(value: number) {
+    const nextRadius = Math.min(25, Math.max(1, value));
+    setRadius(nextRadius);
+    if (selected && selected.distance > nextRadius) setSelected(null);
+  }
 
   function swipe(direction: "like" | "pass") {
     if (!current) return;
 
     if (direction === "like") {
-      setLiked((old) => [...old, current.id]);
+      setLiked((old) => old.includes(current.id) ? old : [...old, current.id]);
 
       if (current.likedYou || matches.includes(current.id)) {
         setMatches((old) => old.includes(current.id) ? old : [...old, current.id]);
         setMatchPopup(current);
       }
     } else {
-      setPassed((old) => [...old, current.id]);
+      setPassed((old) => old.includes(current.id) ? old : [...old, current.id]);
     }
 
     setSelected(null);
-    setIndex((old) => old + 1);
+    setIndex((old) => clampDiscoveryIndex(old + 1));
   }
 
   function openChat(person: Person) {
@@ -187,7 +261,7 @@ export default function App() {
             <span className="status-dot" />
             <div>
               <strong>Spotify</strong>
-              <span>Demo mode</span>
+              <span>{spotify.status === "checking" ? "Checking connection..." : spotifyConnected ? "Connected" : "Demo mode"}</span>
             </div>
             <span className="spotify-symbol">♫</span>
           </div>
@@ -196,10 +270,10 @@ export default function App() {
             <span>Settings</span>
           </button>
           <div className="sidebar-user">
-            <div className="avatar avatar-self">A</div>
+            <div className="avatar avatar-self">{profileImage ? <img src={profileImage} alt="" /> : "A"}</div>
             <div className="user-label">
-              <strong>{name}</strong>
-              <span>Free account</span>
+              <strong>{profileName}</strong>
+              <span>{spotifyConnected ? "Spotify connected" : "Demo account"}</span>
             </div>
             <button className="icon-button" aria-label="Settings" onClick={() => setPage("settings")}>···</button>
           </div>
@@ -230,7 +304,10 @@ export default function App() {
                   <h1>Find your <span className="gradient-text">frequency.</span></h1>
                   <p className="subtitle">Meet people who just get your music.</p>
                 </div>
-                <div className="radius-chip"><Icon>◎</Icon> Within {radius} km</div>
+                <div className="discover-actions">
+                  <div className="radius-chip"><Icon>◎</Icon> Within {radius} km</div>
+                  {!spotifyConnected && <div className="spotify-discover-card"><div><strong>{spotify.status === "checking" ? "Connecting to Spotify" : "Make your matches musical"}</strong><span>{spotify.status === "checking" ? "Preparing secure sign-in..." : "Connect Spotify to use your real listening data."}</span>{spotify.error && <span className="spotify-error" role="alert">{spotify.error}</span>}</div><button className="button-primary spotify-connect-button" onClick={spotify.connect} disabled={spotify.status === "checking"}>{spotify.status === "checking" ? "Connecting..." : spotify.status === "error" ? "Try again" : "Connect Spotify"}</button></div>}
+                </div>
               </div>
 
               <div className="discover-grid">
@@ -292,8 +369,9 @@ export default function App() {
                     <p>Compatibility built around the music you actually love.</p>
                     <div className="stat-grid">
                       <div><strong>{liked.length}</strong><span>Liked</span></div>
+                      <div><strong>{passed.length}</strong><span>Passed</span></div>
                       <div><strong>{matches.length}</strong><span>Matches</span></div>
-                      <div><strong>{people.length - index}</strong><span>To discover</span></div>
+                      <div><strong>{people.length - safeIndex}</strong><span>To discover</span></div>
                     </div>
                   </div>
 
@@ -326,52 +404,160 @@ export default function App() {
 
           {page === "map" && (
             <section>
+              
               <div className="page-heading">
-                <div><div className="eyebrow">YOUR LOCAL SCENE</div><h1>People in your <span className="gradient-text">orbit.</span></h1><p className="subtitle">Find your sound, closer to home.</p></div>
-                <label className="radius-select">Radius
-                  <select value={radius} onChange={(e) => setRadius(Number(e.target.value))}>
-                    <option value={2}>2 km</option><option value={5}>5 km</option><option value={10}>10 km</option><option value={25}>25 km</option>
-                  </select>
-                </label>
+                <div>
+                  <div className="eyebrow">YOUR LOCAL SCENE</div>
+                  <h1>
+                    People in your <span className="gradient-text">orbit.</span>
+                  </h1>
+                  <p className="subtitle">
+                    Find your sound, closer to home.
+                  </p>
+                </div>
+
+                <div className="distance-control">
+                  <div className="distance-heading">
+                    <label htmlFor="distance-slider">Search radius</label>
+                    <span className="distance-value">{radius} km</span>
+                  </div>
+
+                  <input
+                    id="distance-slider"
+                    className="distance-slider"
+                    type="range"
+                    min={1}
+                    max={25}
+                    step={1}
+                    value={radius}
+                    onChange={(e) => updateRadius(Number(e.target.value))}
+                    aria-label="Search radius in kilometres"
+                  />
+
+                  <div className="distance-limits">
+                    <span>1 km</span>
+                    <span>25 km</span>
+                  </div>
+                </div>
               </div>
+
+
               <div className="map-layout">
                 <div className="map-canvas">
                   <div className="map-grid" />
-                  <div className="map-road road-a" /><div className="map-road road-b" /><div className="map-road road-c" /><div className="map-road road-d" />
+                  <div className="map-road road-a" />
+                  <div className="map-road road-b" />
+                  <div className="map-road road-c" />
+                  <div className="map-road road-d" />
                   <div className="map-water" />
-                  <div className="map-label label-a">INDIRANAGAR</div><div className="map-label label-b">ULSOOR LAKE</div><div className="map-label label-c">MG ROAD</div><div className="map-label label-d">YOUR AREA</div>
-                  <div className="you-marker"><span /><div>YOU</div></div>
-                  {people.map((person, i) => (
-                    <button
-                      key={person.id}
-                      className={`map-marker marker-${i} ${selected?.id === person.id ? "selected" : ""}`}
-                      onClick={() => setSelected(person)}
-                      aria-label={`View ${person.name}`}
-                    >
-                      <img src={photo(person.image, 100)} alt="" />
-                      <span>{person.match}%</span>
-                    </button>
-                  ))}
-                  <div className="map-legend"><span className="status-dot" /> People discovering nearby</div>
+
+                  <div className="map-label label-a">INDIRANAGAR</div>
+                  <div className="map-label label-b">ULSOOR LAKE</div>
+                  <div className="map-label label-c">MG ROAD</div>
+                  <div className="map-label label-d">YOUR AREA</div>
+
+                  <div className="you-marker">
+                    <span />
+                    <div>YOU</div>
+                  </div>
+
+                  {nearbyPeople.map((person) => {
+                      const markerIndex = people.findIndex((p) => p.id === person.id);
+
+                      return (
+                        <button
+                          key={person.id}
+                          className={`map-marker marker-${markerIndex} ${
+                            selected?.id === person.id ? "selected" : ""
+                          }`}
+                          onClick={() => setSelected(person)}
+                          aria-label={`View ${person.name}`}
+                        >
+                          <img src={photo(person.image, 100)} alt="" />
+                          <span>{person.match}%</span>
+                        </button>
+                      );
+                    })}
+
+                  <div className="map-legend">
+                    <span className="status-dot" />
+                    People discovering nearby
+                  </div>
                 </div>
+
                 <div className="nearby-panel panel">
-                  <div className="panel-heading"><div><h3>In your orbit</h3><p className="small muted">{people.length} people in this demo</p></div><span className="live-badge">LIVE</span></div>
-                  <div className="search-box"><Icon>⌕</Icon><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search people..." /></div>
-                  {people.filter(p => p.name.toLowerCase().includes(query.toLowerCase())).map((person) => (
-                    <button className={`nearby-person ${selected?.id === person.id ? "selected" : ""}`} key={person.id} onClick={() => setSelected(person)}>
-                      <img src={photo(person.image, 100)} alt="" />
-                      <div className="nearby-info"><strong>{person.name}, {person.age}</strong><span>{person.distance} km away</span><span className="small accent-text">{person.artists.slice(0, 2).join(" · ")}</span></div>
-                      <span className="nearby-score">{person.match}%</span>
-                    </button>
-                  ))}
-                  {selected && (
-                    <div className="selected-person">
-                      <p className="eyebrow">SELECTED PROFILE</p><strong>{selected.name} is a {selected.match}% match</strong>
-                      <p className="small muted">{selected.bio}</p>
-                      <button className="button-primary full-button" onClick={() => { setPage("discover"); setIndex(people.findIndex(p => p.id === selected.id)); setSelected(null); }}>View in Discover</button>
+                  <div className="panel-heading">
+                    <div>
+                      <h3>In your orbit</h3>
+                      <p className="small muted">
+                         {nearbyPeople.length} people within {radius} km
+                      </p>
+                    </div>
+                    <span className="live-badge">LIVE</span>
+                  </div>
+
+                  <div className="search-box">
+                    <Icon>⌕</Icon>
+                    <input
+                      value={query}
+                      onChange={(e) => setQuery(e.target.value)}
+                      placeholder="Search people..."
+                    />
+                  </div>
+
+                  {filteredNearbyPeople.map((person) => (
+                      <button
+                        className={`nearby-person ${selected?.id === person.id ? "selected" : ""}`}
+                        key={person.id}
+                        onClick={() => setSelected(person)}
+                      >
+                        <img src={photo(person.image, 100)} alt="" />
+
+                        <div className="nearby-info">
+                          <strong>
+                            {person.name}, {person.age}
+                          </strong>
+                          <span>{person.distance} km away</span>
+                          <span className="small accent-text">
+                            {person.artists.slice(0, 2).join(" · ")}
+                          </span>
+                        </div>
+
+                        <span className="nearby-score">{person.match}%</span>
+                      </button>
+                    ))}
+
+                  {filteredNearbyPeople.length === 0 && (
+                    <div className="empty-state">
+                      <p>No people found within {radius} km.</p>
+                      <p>Try increasing your search radius or changing your search.</p>
                     </div>
                   )}
-                  <p className="privacy-note">◎ Locations are illustrative. Exact coordinates are never shown.</p>
+
+                  {selected && (
+                    <div className="selected-person">
+                      <p className="eyebrow">SELECTED PROFILE</p>
+                      <strong>
+                        {selected.name} is a {selected.match}% match
+                      </strong>
+                      <p className="small muted">{selected.bio}</p>
+
+                      <button
+                        className="button-primary full-button"
+                        onClick={() => {
+                          setPage("discover");
+                          setIndex(people.findIndex((p) => p.id === selected.id));
+                          setSelected(null);
+                        }}
+                      >
+                        View in Discover
+                      </button>
+                    </div>
+                  )}
+
+                  <p className="privacy-note">
+                    ◎ Locations are illustrative. Exact coordinates are never shown.
+                  </p>
                 </div>
               </div>
             </section>
@@ -413,21 +599,21 @@ export default function App() {
 
           {page === "profile" && (
             <section>
-              <div className="page-heading"><div><div className="eyebrow">YOUR MUSICAL IDENTITY</div><h1>Your world, in <span className="gradient-text">sound.</span></h1><p className="subtitle">A little about you, a lot about what you love.</p></div><button className="button-secondary" onClick={() => { const n = prompt("Display name", name); if (n?.trim()) setName(n.trim()); const b = prompt("Your bio", bio); if (b !== null) setBio(b); }}>✎ Edit profile</button></div>
+              <div className="page-heading"><div><div className="eyebrow">YOUR MUSICAL IDENTITY</div><h1>Your world, in <span className="gradient-text">sound.</span></h1><p className="subtitle">{spotifyConnected ? "Your Spotify profile and listening data." : "A little about you, a lot about what you love."}</p></div><button className="button-secondary" onClick={() => { const n = prompt("Display name", name); if (n?.trim()) setName(n.trim()); const b = prompt("Your bio", bio); if (b !== null) setBio(b); }}>✎ Edit profile</button></div>
               <div className="profile-layout">
                 <div className="panel profile-hero">
                   <div className="profile-cover" />
-                  <div className="profile-identity"><div className="profile-avatar">A</div><div className="profile-name"><h2>{name}</h2><span>@musiclover · Bengaluru</span></div><span className="profile-complete">PROFILE PREVIEW</span></div>
+                  <div className="profile-identity"><div className="profile-avatar">{profileImage ? <img src={profileImage} alt="Spotify profile" /> : "A"}</div><div className="profile-name"><h2>{profileName}</h2><span>{spotifyConnected ? "Spotify connected" : "@musiclover · Bengaluru"}</span></div><span className="profile-complete">{spotifyConnected ? "SPOTIFY DATA" : "PROFILE PREVIEW"}</span></div>
                   <p className="profile-bio">{bio}</p>
-                  <div className="profile-stats"><div><strong>12</strong><span>Top artists</span></div><div><strong>38</strong><span>Top tracks</span></div><div><strong>{matches.length}</strong><span>Connections</span></div></div>
+                  <div className="profile-stats"><div><strong>{spotifyConnected ? topArtists.length : 12}</strong><span>Top artists</span></div><div><strong>{spotifyConnected ? recentlyPlayed.length : 38}</strong><span>Recent tracks</span></div><div><strong>{matches.length}</strong><span>Connections</span></div></div>
                 </div>
                 <div className="panel">
-                  <div className="panel-heading"><h3>Your top artists</h3><span className="muted small">DEMO DATA</span></div>
-                  {["Joji", "The Weeknd", "Lana Del Rey", "Frank Ocean", "Radiohead"].map((artist, i) => <div className="rank-row" key={artist}><span className="rank-number">0{i + 1}</span><img src={photo(artwork[i % artwork.length], 100)} alt="" /><strong>{artist}</strong><span className="rank-bars"><i style={{ width: `${95 - i * 13}%` }} /></span></div>)}
+                  <div className="panel-heading"><h3>Your top artists</h3><span className="muted small">{spotifyConnected ? "SPOTIFY · 6 MONTHS" : "DEMO DATA"}</span></div>
+                  {spotifyConnected ? (topArtists.length > 0 ? topArtists.map((artist, i) => <div className="rank-row" key={artist.id}><span className="rank-number">0{i + 1}</span>{artist.imageUrl ? <img src={artist.imageUrl} alt="" /> : <span className="artwork-placeholder">♫</span>}<strong>{artist.name}</strong><span className="rank-bars"><i style={{ width: `${95 - i * 13}%` }} /></span></div>) : <p className="empty-music-data">Spotify did not return top artists for this account yet.</p>) : ["Joji", "The Weeknd", "Lana Del Rey", "Frank Ocean", "Radiohead"].map((artist, i) => <div className="rank-row" key={artist}><span className="rank-number">0{i + 1}</span><img src={photo(artwork[i % artwork.length], 100)} alt="" /><strong>{artist}</strong><span className="rank-bars"><i style={{ width: `${95 - i * 13}%` }} /></span></div>)}
                 </div>
                 <div className="panel">
-                  <div className="panel-heading"><h3>On repeat</h3><span className="muted small">TOP TRACKS</span></div>
-                  {["Slow Dancing in the Dark", "After Hours", "No Surprises", "Pink + White"].map((track, i) => <div className="mini-track" key={track}><img src={photo(artwork[i % artwork.length], 100)} alt="" /><div><strong>{track}</strong><span>{["Joji", "The Weeknd", "Radiohead", "Frank Ocean"][i]}</span></div><span className="track-note">♫</span></div>)}
+                  <div className="panel-heading"><h3>On repeat</h3><span className="muted small">{spotifyConnected ? "RECENTLY PLAYED" : "DEMO DATA"}</span></div>
+                  {spotifyConnected ? (recentlyPlayed.length > 0 ? recentlyPlayed.map((track) => <div className="mini-track" key={track.id}>{track.imageUrl ? <img src={track.imageUrl} alt="" /> : <span className="artwork-placeholder">♫</span>}<div><strong>{track.name}</strong><span>{track.artists}</span></div><span className="track-note">♫</span></div>) : <p className="empty-music-data">Spotify has no recently played tracks available for this account.</p>) : ["Slow Dancing in the Dark", "After Hours", "No Surprises", "Pink + White"].map((track, i) => <div className="mini-track" key={track}><img src={photo(artwork[i % artwork.length], 100)} alt="" /><div><strong>{track}</strong><span>{["Joji", "The Weeknd", "Radiohead", "Frank Ocean"][i]}</span></div><span className="track-note">♫</span></div>)}
                 </div>
                 <div className="panel">
                   <div className="panel-heading"><h3>Your genres</h3></div>
@@ -443,13 +629,13 @@ export default function App() {
               <div className="panel settings-panel">
                 <div className="settings-section"><h3>Discovery</h3><p>Control who you see and who can find you.</p>
                   <div className="setting-row"><div><strong>Visible to nearby users</strong><span>Let people in your area discover your profile.</span></div><button className={`toggle ${visible ? "on" : ""}`} onClick={() => setVisible(!visible)} aria-label="Toggle discovery visibility"><span /></button></div>
-                  <div className="setting-row"><div><strong>Discovery radius</strong><span>Choose how far you want to discover.</span></div><select value={radius} onChange={e => setRadius(Number(e.target.value))}><option value={2}>2 km</option><option value={5}>5 km</option><option value={10}>10 km</option><option value={25}>25 km</option></select></div>
+                  <div className="setting-row radius-setting"><div><strong>Discovery radius</strong><span>Choose how far you want to discover.</span></div><div className="settings-radius-control"><label htmlFor="settings-radius">{radius} km</label><input id="settings-radius" className="distance-slider" type="range" min={1} max={25} step={1} value={radius} onChange={e => updateRadius(Number(e.target.value))} /></div></div>
                 </div>
                 <div className="settings-section"><h3>Appearance</h3><p>Set the mood for your music space.</p>
                   <div className="setting-row"><div><strong>Dark appearance</strong><span>Easy on the eyes, day or night.</span></div><button className={`toggle ${dark ? "on" : ""}`} onClick={() => setDark(!dark)} aria-label="Toggle dark theme"><span /></button></div>
                 </div>
                 <div className="settings-section"><h3>Music account</h3><p>Your music provider connection.</p>
-                  <div className="setting-row"><div className="provider-icon">♫</div><div className="setting-description"><strong>Spotify</strong><span>Not connected · Demo mode</span></div><span className="coming-soon">INTEGRATION LATER</span></div>
+                  <div className="setting-row"><div className="provider-icon">♫</div><div className="setting-description"><strong>Spotify</strong><span>{spotify.status === "checking" ? "Checking your saved Spotify session..." : spotifyConnected ? `Connected as ${spotifyDisplayName}` : "Not connected · Demo mode remains active"}</span>{spotify.error && <p className="spotify-error" role="alert">{spotify.error}</p>}</div>{spotifyConnected ? <button className="button-secondary spotify-action" onClick={spotify.disconnect}>Disconnect</button> : <button className="button-primary spotify-action" onClick={spotify.connect} disabled={spotify.status === "checking"}>{spotify.status === "error" ? "Try again" : spotify.status === "checking" ? "Connecting..." : "Connect Spotify"}</button>}</div>
                 </div>
                 <div className="settings-section"><h3>Privacy</h3><p>Demo controls for the future production app.</p>
                   <div className="setting-row"><div><strong>Location privacy</strong><span>Other users should only see approximate distance.</span></div><span className="privacy-enabled">Enabled by design</span></div>
